@@ -13,6 +13,9 @@ module.exports = function (grunt) {
 	var _ = grunt.util._;
 
 	var path = require('path');
+	var less = require('less');
+	var parser = new(less.Parser);
+	var hashlib = require('crypto');
 
 	// start build pattern --> <!-- ref:[target] output -->
 	var regbuild = /<!--\s*ref:(\w+)\s*(.+)\s*-->/;
@@ -28,6 +31,9 @@ module.exports = function (grunt) {
 
 	// inlineCSS template
 	var inlineCSSTemplate = '<style><%= dest %></style>';
+
+	// LESS template
+	var lessTemplate = '<link type="text/css" rel="stylesheet" href="<%= dest %>">';
 
 	grunt.registerMultiTask('htmlrefs', "Replaces (or removes) references to non-optimized scripts or stylesheets on HTML files", function () {
 		var params = this.options();
@@ -65,28 +71,124 @@ module.exports = function (grunt) {
 				var indent = (block.raw[0].match(/^\s*/) || [])[0];
 				return indent + grunt.template.process(scriptTemplate, {data: block});
 			},
-			css : function (block) {
-				var indent = (block.raw[0].match(/^\s*/) || [])[0];
-				return indent + grunt.template.process(stylesheetTemplate, {data: block});
-			},
-			inlinecss : function (block) {
-				var indent = (block.raw[0].match(/^\s*/) || [])[0];
-				var lines = grunt.file.read(block.dest).replace(/\r\n/g, '\n').split(/\n/).map(function(l) {return indent + l});
-				return indent + grunt.template.process(inlineCSSTemplate, {data: {dest:lines}});
-			},
-			include : function (block, lf, includes) {
-				// let's see if we have that include listed
-				if(!includes[block.dest]) return '';
+		css : function (block) {
+			var raw = block.raw;
+			if (raw.length < 3)
+				throw new Error("No sources specified in between ref tags");
 
-				var indent = (block.raw[0].match(/^\s*/) || [])[0];
-				var lines = grunt.file.read(includes[block.dest]).replace(/\r\n/g, '\n').split(/\n/).map(function(l) {return indent + l});
-
-				return lines.join(lf);
-			},
-			remove : function (block) {
-				return ''; // removes replaces with nothing
+			var indent = (raw[0].match(/^\s*/) || [])[0];
+			var STATIC_URL = block.static_url;
+			var STATIC_ROOT = block.static_root;
+			var CDN_PREFIX = block.cdn_prefix || STATIC_URL;
+			var buff = [];
+			for (var i = 1; i < raw.length - 1; i++) {
+				var line = raw[i];
+				var src = line.match(/href\s*=\s*\"(.+)\"/)[1].replace(STATIC_URL, STATIC_ROOT);
+				buff.push(grunt.file.read(src));
 			}
+
+            var css = buff.join("\n");
+            var dest_original = block.dest.trim();
+            var dest;
+            var is_file = dest_original.length >= 4 && dest_original.substr(dest_original.length - 4) == ".css";
+            if(is_file){
+                dest = dest_original;
+                block.dest = dest.replace(STATIC_URL, CDN_PREFIX);
+            }
+            else{
+                var hashed_name = hash(css) + ".css";
+                dest = path.join(dest_original.replace(STATIC_URL, STATIC_ROOT), hashed_name);
+                if(CDN_PREFIX.indexOf("http://", "") > -1)
+                    block.dest = "http://" + path.normalize(path.join(dest_original.replace(STATIC_URL, CDN_PREFIX.replace("http://", "")), hashed_name));
+                else
+                    block.dest = path.normalize(path.join(dest_original.replace(STATIC_URL, CDN_PREFIX), hashed_name));
+            }
+            grunt.file.write(dest, css);
+            return indent + grunt.template.process(lessTemplate, { data : block });
+		},
+		inlinecss : function (block) {
+			var indent = (block.raw[0].match(/^\s*/) || [])[0];
+			var lines = grunt.file.read(block.dest).replace(/\r\n/g, '\n').split(/\n/).map(function (l) {
+					return indent + l
+				});
+			return indent + grunt.template.process(inlineCSSTemplate, {
+				data : {
+					dest : lines
+				}
+			});
+		},
+		include : function (block, lf, includes) {
+			// let's see if we have that include listed
+			if (!includes[block.dest])
+				return '';
+
+			var indent = (block.raw[0].match(/^\s*/) || [])[0];
+			var lines = grunt.file.read(includes[block.dest]).replace(/\r\n/g, '\n').split(/\n/).map(function (l) {
+					return indent + l
+				});
+
+			return lines.join(lf);
+		},
+		remove : function (block) {
+			return ''; // removes replaces with nothing
+		},
+		less : function (block) {
+			var raw = block.raw;
+			if (raw.length < 3)
+				throw new Error("No sources specified in between ref tags");
+
+			var indent = (raw[0].match(/^\s*/) || [])[0];
+			var STATIC_URL = block.static_url;
+			var STATIC_ROOT = block.static_root;
+			var CDN_PREFIX = block.cdn_prefix || STATIC_URL;
+			var buff = [];
+			for (var i = 1; i < raw.length - 1; i++) {
+				var line = raw[i];
+				var src = line.match(/href\s*=\s*\"(.+)\"/)[1].replace(STATIC_URL, STATIC_ROOT);
+				var parser = new(less.Parser)({
+						//paths: ['.', './lib'], // Specify search paths for @import directives
+						filename : src // Specify a filename, for better error messages
+					});
+				parser.parse(grunt.file.read(src), function (e, tree) {
+					if (e)
+						throw new Error("Error parsing " + src + " - " + e);
+					buff.push(tree.toCSS({
+							compress : true
+						}));
+				});
+			}
+
+            var css = buff.join("\n");
+            var dest_original = block.dest.trim();
+            var dest;
+            var is_file = dest_original.length >= 4 && dest_original.substr(dest_original.length - 4) == ".css";
+            if(is_file){
+                dest = dest_original;
+                block.dest = dest.replace(STATIC_URL, CDN_PREFIX);
+            }
+            else{
+                var hashed_name = hash(css) + ".css";
+                dest = path.join(dest_original.replace(STATIC_URL, STATIC_ROOT), hashed_name);
+                if(CDN_PREFIX.indexOf("http://", "") > -1)
+                    block.dest = "http://" + path.normalize(path.join(dest_original.replace(STATIC_URL, CDN_PREFIX.replace("http://", "")), hashed_name));
+                else
+                    block.dest = path.normalize(path.join(dest_original.replace(STATIC_URL, CDN_PREFIX), hashed_name));
+            }
+            grunt.file.write(dest, css);
+            return indent + grunt.template.process(lessTemplate, { data : block });
+		},
+		add : function (block) {
+			var raw = block.raw[1];
+			var indent = (raw.match(/^\s*/) || [])[0];
+			return indent + grunt.template.process(raw.match(/<!--\s*(.+)\s*-->/)[1], {
+				data : block
+			});
+		}
 	};
+
+	function hash(content) {
+		return hashlib.createHash("md5").update(content).digest("hex");
+	}
 
 	function getBlocks(body) {
 		var lines = body.replace(/\r\n/g, '\n').split(/\n/),
