@@ -95,11 +95,12 @@ After running the grunt task it will be stored on the dist folder as
 </html>
 ```
 
-There 4 types of replacements: css, inlinecss, js, include and remove (it will erase the whole block).
+There 6 types of replacements: css, inlinecss, js, include, remove (it will erase the whole block), less and add.
 
 [grunt]: https://github.com/cowboy/grunt
 
 ## Release History
+* 0.4.3 2 new sections less and add, better versioning for 
 * 0.4.0 Support Grunt 0.4
 * 0.2.2 BUGFIX: Multiple `remove` sections (thanks @trongthanh)
 * 0.2.0 Added support for includesu
